@@ -146,11 +146,20 @@ class PydanticRoutesProcessor:
                     "schema": PYTHON_TO_OPENAPI_MAPPER[input_parameter["type"]],
                 })
             result["parameters"] = parameters
-        model_spec = response_model.schema()
+        model_spec = response_model.schema(ref_template="#/components/schemas/{model}")
         model_name = response_model.__name__
         # dangerous
         if model_name not in self.components["schemas"]:
             self.components["schemas"][model_name] = model_spec
+
+        definitions = None
+        if "definitions" in model_spec:
+            definitions = model_spec.pop("definitions")
+        # two times more dangerous
+        if definitions:
+            for definition_name, definition_spec in definitions.items():
+                if definition_name not in self.components["schemas"]:
+                    self.components["schemas"][definition_name] = definition_spec
 
         responses = {
             "200": {

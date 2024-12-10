@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 import tornado.ioloop
 import tornado.options
@@ -15,8 +15,14 @@ class SumResponse(BaseModel):
     you_are_cool: Optional[bool] = Field(None, description="You're cool if sum is 69")
 
 
+class StatusItem(BaseModel):
+    item_name: str = Field(..., example="item_name")
+    item_health: str = Field(..., example="item_health")
+
+
 class StatusResponse(BaseModel):
     status: str = Field(..., example="ok")
+    items: List[StatusItem] = Field(...)
 
 
 class StatusHandler(tornado.web.RequestHandler):
