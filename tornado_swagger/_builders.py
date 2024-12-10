@@ -8,13 +8,40 @@ import re
 import typing
 import warnings
 
+from pydantic import BaseModel
 import tornado.web
 import yaml
 
-from tornado_swagger.const import API_OPENAPI_3, API_SWAGGER_2
+from tornado_swagger.const import API_OPENAPI_3, API_SWAGGER_2, API_OPENAPI_3_PYDANTIC
 
 SWAGGER_TEMPLATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "templates", "swagger.yaml"))
 SWAGGER_DOC_SEPARATOR = "---"
+
+
+PYTHON_TO_OPENAPI_MAPPER = {
+    int: {"type": "integer", "format": "int32"},
+    float: {"type": "number", "format": "float"},
+    str: {"type": "string"},
+    bool: {"type": "boolean"},
+    list: {"type": "array", "items": {}},
+    dict: {"type": "object"},
+    None: {"nullable": True},
+    bytes: {"type": "string", "format": "byte"},
+    complex: {"type": "number", "format": "double"},
+}
+
+
+def input_parameters_getter(some_callable: typing.Callable) -> typing.List[typing.Dict[str, typing.Type]]:
+    signature = inspect.signature(some_callable)
+    parameters = []
+
+    for name, param in signature.parameters.items():
+        if name in ("self", "cls"):
+            continue
+
+        parameters.append({"name": name, "type": param.annotation})
+
+    return parameters
 
 
 def _extract_swagger_definition(endpoint_doc: str):
@@ -63,6 +90,83 @@ def _build_doc_from_func_doc(handler):
             out.update({method: build_swagger_docs(doc)})
 
     return out
+
+
+class PydanticRoutesProcessor:
+    def __init__(self):
+        self.paths = collections.defaultdict(dict)
+        self.components = {
+                "schemas": {},
+                "parameters": {},
+            }
+
+    def extract_paths_pydantic(self, routes):
+        for route in routes:
+            for method_name, method_description in self._build_doc_from_pydantic_handler(route.target).items():
+                path_handler = _format_handler_path(route, method_name)
+                if path_handler is None:
+                    continue
+
+                self.paths[path_handler].update({method_name: method_description})
+
+        return self.paths, self.components
+
+    def _build_doc_from_pydantic_handler(self, handler):
+        out = {}
+
+        for method_name in handler.SUPPORTED_METHODS:
+            method_name = method_name.lower()
+            method_callable = getattr(handler, method_name)
+            is_swagger_handler = getattr(method_callable, "_is_swagger_handler", False)
+            if is_swagger_handler:
+                response_model = getattr(method_callable, "_response_model", None)
+                tags = getattr(method_callable, "_swagger_tags", None)
+                input_parameters = input_parameters_getter(method_callable)
+                out.update(
+                    {method_name: self.build_pydantic_docs(input_parameters, response_model, tags)}
+                )
+
+        return out
+
+
+    def build_pydantic_docs(
+            self,
+            input_parameters: typing.List[typing.Dict[str, typing.Any]],
+            response_model: BaseModel,
+            tags: typing.Optional[typing.List[str]] = None,
+    ):
+        result = {}
+        if input_parameters:
+            parameters = []
+            for input_parameter in input_parameters:
+                parameters.append({
+                    "in": "path",
+                    "required": True,
+                    "name": input_parameter["name"],
+                    "schema": PYTHON_TO_OPENAPI_MAPPER[input_parameter["type"]],
+                })
+            result["parameters"] = parameters
+        model_spec = response_model.schema()
+        model_name = response_model.__name__
+        # dangerous
+        if model_name not in self.components["schemas"]:
+            self.components["schemas"][model_name] = model_spec
+
+        responses = {
+            "200": {
+                "description": "Service status and language options",
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": f"#/components/schemas/{model_name}"},
+                    }
+                }
+            }
+        }
+        result["responses"] = responses
+
+        if tags:
+            result["tags"] = tags
+        return result
 
 
 def _try_extract_args(method_handler):
@@ -242,8 +346,7 @@ class OpenApiDocBuilder(BaseDocBuilder):
                 "description": _clean_description(description),
                 "version": api_version,
             },
-            "basePath": api_base_url,
-            "schemes": schemes,
+            "servers": [{"url": api_base_url}],
             "components": {
                 "schemas": models,
                 "parameters": parameters,
@@ -261,7 +364,55 @@ class OpenApiDocBuilder(BaseDocBuilder):
         return swagger_spec
 
 
-doc_builders = {b.schema: b for b in [Swagger2DocBuilder(), OpenApiDocBuilder()]}
+class PydanticBuilder(BaseDocBuilder):
+    """OpenAPI 3 Schema builder with pydantic support"""
+
+    @property
+    def schema(self):
+        """Supported Schema"""
+        return API_OPENAPI_3_PYDANTIC
+
+    def generate_doc(
+        self,
+        routes: typing.List[tornado.web.URLSpec],
+        *,
+        api_base_url,
+        description,
+        api_version,
+        title,
+        contact,
+        schemes,
+        security_definitions,
+        security,
+        models,
+        parameters
+    ):
+        """Generate docs"""
+        swagger_spec = {
+            "openapi": "3.0.3",
+            "info": {
+                "title": title,
+                "description": _clean_description(description),
+                "version": api_version,
+            },
+            "servers": [{"url": api_base_url}],
+        }
+        routes_processor = PydanticRoutesProcessor()
+        paths, components = routes_processor.extract_paths_pydantic(routes)
+        swagger_spec["components"] = components
+        swagger_spec["paths"] = paths
+
+        if contact:
+            swagger_spec["info"]["contact"] = {"name": contact}
+        if security_definitions:
+            swagger_spec["securityDefinitions"] = security_definitions
+        if security:
+            swagger_spec["security"] = security
+
+        return swagger_spec
+
+
+doc_builders = {b.schema: b for b in [Swagger2DocBuilder(), OpenApiDocBuilder(), PydanticBuilder()]}
 
 
 def generate_doc_from_endpoints(
