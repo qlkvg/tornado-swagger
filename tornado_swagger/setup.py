@@ -40,7 +40,7 @@ def export_swagger(
     )
 
 
-def pydantic_decorator(
+def swagger_decorator(
         *, response: typing.Type[BaseModel], tags: typing.Optional[typing.List[str]] = None
 ):
     def decorator(f: typing.Callable) -> typing.Callable:

@@ -5,7 +5,7 @@ import tornado.options
 import tornado.web
 
 from tornado_swagger.const import API_OPENAPI_3_PYDANTIC
-from tornado_swagger.setup import setup_swagger, pydantic_decorator
+from tornado_swagger.setup import setup_swagger, swagger_decorator
 
 from pydantic import BaseModel, Field
 
@@ -15,8 +15,18 @@ class SumResponse(BaseModel):
     you_are_cool: Optional[bool] = Field(None, description="You're cool if sum is 69")
 
 
+class StatusResponse(BaseModel):
+    status: str = Field(..., example="ok")
+
+
+class StatusHandler(tornado.web.RequestHandler):
+    @swagger_decorator(response=StatusResponse, tags=["Status"])
+    def get(self):
+        self.write({"status": "ok"})
+
+
 class SumHandler(tornado.web.RequestHandler):
-    @pydantic_decorator(response=SumResponse, tags=["Calculus"])
+    @swagger_decorator(response=SumResponse, tags=["Calculus"])
     def post(self, term_one: int, term_two: int):
         term_one = int(term_one)
         term_two = int(term_two)
@@ -29,6 +39,7 @@ class SumHandler(tornado.web.RequestHandler):
 class Application(tornado.web.Application):
     _routes = [
         tornado.web.url(r"/term-one/(?P<term_one>[0-9]+)/term-two/(?P<term_two>[0-9]+)/sum", SumHandler),
+        tornado.web.url(r"/status", StatusHandler),
         tornado.web.url(r"/static/(.*)", tornado.web.StaticFileHandler, {"path": "/var/www"}),
     ]
 
